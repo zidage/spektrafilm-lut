@@ -368,6 +368,43 @@ class NegativeADXModel:
 # LUT baking
 
 
+# Attribution required by SPEKTRAFILM_LICENSE.txt (CC BY-SA 4.0) on every LUT.
+LUT_ATTRIBUTION = [
+    "Derived from spektrafilm by Andrea Volpato",
+    "https://github.com/andreavolpato/spektrafilm",
+    "Licensed CC BY-SA 4.0 (see SPEKTRAFILM_LICENSE.txt)",
+    "Modified by zidage: ACES LMT export (https://github.com/zidage/spektrafilm-lut, branch aces-adx-lmt)",
+]
+
+LUT_CHANGELOG = """Changes relative to spektrafilm by Andrea Volpato
+(https://github.com/andreavolpato/spektrafilm), made by zidage
+(https://github.com/zidage/spektrafilm-lut, branch aces-adx-lmt).
+
+The spektrafilm film, print and paper profiles are not changed.
+
+The LUTs in this folder are ACEScc (AP1) -> ACEScc (AP1) look modification
+transforms. They are sampled from new export code (spektrafilm_lut_creator/aces_lmt.py):
+
+- *_adx_acescc_lmt_*: scene -> spektrafilm negative -> Academy Printing
+  Density (SMPTE ST 2065-2) -> ADX16 (SMPTE ST 2065-3) -> Academy ADX16 IDT
+  -> ACEScc. There is no print stage.
+- *_invACES2_acescc_lmt_*: scene -> spektrafilm negative -> print (or the
+  reversal film itself) -> scan -> inverse ACES 2.0 SDR 100 nit output
+  transform -> ACEScc. The scanner white and black references are on and
+  the runtime lightness roll-off is off. The tags _neutral, _hue<x> and
+  _chroma<x> in a file name identify optional colour corrections.
+"""
+
+
+def write_lut_license_files(out_dir: Path) -> None:
+    """Put the LUT license and the change log next to exported LUTs."""
+    from importlib.resources import files
+    out_dir = Path(out_dir)
+    src = files("spektrafilm.data.license") / "SPEKTRAFILM_LICENSE.txt"
+    (out_dir / "SPEKTRAFILM_LICENSE.txt").write_bytes(src.read_bytes())
+    (out_dir / "CHANGELOG.txt").write_text(LUT_CHANGELOG, encoding="utf-8")
+
+
 def bake_acescc_lmt(model: NegativeADXModel, size: int = 65,
                     domain: tuple[float, float] = (ACESCC_MIN, ACESCC_MAX),
                     chunk: int = 65 ** 2 * 8) -> np.ndarray:
@@ -388,7 +425,8 @@ def bake_acescc_lmt(model: NegativeADXModel, size: int = 65,
 def write_cube(table: np.ndarray, path: Path, *, title: str,
                domain: tuple[float, float], comments: list[str] = ()) -> None:
     n = table.shape[0]
-    lines = [f"# {c}" if c else "#" for c in comments]
+    lines = [f"# {c}" for c in LUT_ATTRIBUTION] + ["#"]
+    lines += [f"# {c}" if c else "#" for c in comments]
     lines.append(f'TITLE "{title}"')
     lines.append("DOMAIN_MIN " + " ".join(f"{domain[0]:.10g}" for _ in range(3)))
     lines.append("DOMAIN_MAX " + " ".join(f"{domain[1]:.10g}" for _ in range(3)))
@@ -431,8 +469,18 @@ class PrintDRTSpec:
     # film's lightness/chroma), and scale chroma.
     hue_preserve: float = 0.0
     chroma_gain: float = 1.0
-    display: str = "sRGB - Display"
+    # The display the LUT is inverted for. It must match the viewer: Alcedo
+    # Studio's default is Rec.709 primaries with a gamma 2.2 encoding.
+    display: str = "Gamma 2.2 Rec.709 - Display"
     view: str = "ACES 2.0 - SDR 100 nits (Rec.709)"
+
+
+# Encoding of the supported OCIO displays (all use Rec.709 / sRGB primaries).
+_DISPLAY_GAMMA = {
+    "sRGB - Display": "sRGB",
+    "Gamma 2.2 Rec.709 - Display": 2.2,
+    "Rec.1886 Rec.709 - Display": 2.4,
+}
 
 
 def _srgb_decode(enc: np.ndarray) -> np.ndarray:
@@ -485,6 +533,8 @@ class PrintDRTModel:
         fwd = ocio.DisplayViewTransform(src="ACES2065-1", display=spec.display, view=spec.view)
         inv = ocio.DisplayViewTransform(src="ACES2065-1", display=spec.display, view=spec.view,
                                         direction=ocio.TRANSFORM_DIR_INVERSE)
+        if spec.display not in _DISPLAY_GAMMA:
+            raise ValueError(f"unsupported display {spec.display!r}; use one of {list(_DISPLAY_GAMMA)}")
         self._drt = cfg.getProcessor(fwd).getDefaultCPUProcessor()
         self._inv_drt = cfg.getProcessor(inv).getDefaultCPUProcessor()
         if self.reversal and spec.neutralize:
@@ -563,8 +613,19 @@ class PrintDRTModel:
             out = self._colour_intent(img.reshape(-1, 3), out)
         return out.reshape(img.shape)
 
+    # display() works in sRGB-encoded Rec.709; these convert to / from the
+    # encoding of the OCIO display the DRT inverse is built for.
+    def _to_display_code(self, srgb: np.ndarray) -> np.ndarray:
+        g = _DISPLAY_GAMMA[self.spec.display]
+        return srgb if g == "sRGB" else _srgb_decode(srgb) ** (1.0 / g)
+
+    def _from_display_code(self, code: np.ndarray) -> np.ndarray:
+        import colour
+        g = _DISPLAY_GAMMA[self.spec.display]
+        return code if g == "sRGB" else colour.cctf_encoding(np.fmax(code, 0.0) ** g, function="sRGB")
+
     def _colour_intent(self, aces: np.ndarray, film: np.ndarray) -> np.ndarray:
-        ref = np.clip(_apply_cpu(self._drt, aces * 2.0 ** self.spec.exposure_ev), 0.0, 1.0)
+        ref = self._from_display_code(np.clip(_apply_cpu(self._drt, aces * 2.0 ** self.spec.exposure_ev), 0.0, 1.0))
         lab_f, lab_r = _srgb_to_oklab(film), _srgb_to_oklab(ref)
         c_f = np.hypot(lab_f[:, 1], lab_f[:, 2])
         h_f = np.arctan2(lab_f[:, 2], lab_f[:, 1])
@@ -579,7 +640,7 @@ class PrintDRTModel:
         return np.clip(_oklab_to_srgb(lab), 0.0, 1.0)
 
     def aces_out(self, aces: np.ndarray) -> np.ndarray:
-        return _apply_cpu(self._inv_drt, self.display(aces))
+        return _apply_cpu(self._inv_drt, self._to_display_code(self.display(aces)))
 
     def acescc_lmt(self, acescc: np.ndarray) -> np.ndarray:
         return np.clip(aces_to_acescc(self.aces_out(acescc_to_aces(acescc))), ACESCC_MIN, ACESCC_MAX)

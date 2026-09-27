@@ -5,7 +5,7 @@
 import argparse, time
 from pathlib import Path
 import numpy as np
-from spektrafilm_lut_creator.aces_lmt import NegativeADXModel, NegativeADXSpec, bake_acescc_lmt, write_cube
+from spektrafilm_lut_creator.aces_lmt import NegativeADXModel, NegativeADXSpec, bake_acescc_lmt, write_cube, write_lut_license_files
 
 ap = argparse.ArgumentParser()
 ap.add_argument("films", nargs="+")
@@ -19,6 +19,7 @@ ap.add_argument("--domain", type=float, nargs=2, default=(0.0, 1.0),
 ap.add_argument("--out", default="experiment_results/luts")
 a = ap.parse_args()
 out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
+write_lut_license_files(out)
 for film in a.films:
     t = time.perf_counter()
     spec = NegativeADXSpec(film_profile=film, density_metric=a.metric, balance=a.balance, calibration=a.calibration, exposure_ev=a.exposure_ev)

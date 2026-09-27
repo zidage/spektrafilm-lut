@@ -12,6 +12,7 @@ import argparse
 import re
 from pathlib import Path
 
+import colour
 import numpy as np
 import PyOpenColorIO as ocio
 import rawpy
@@ -20,7 +21,8 @@ from PIL import Image, ImageDraw
 from spektrafilm_lut_creator.aces_lmt import acescc_decode, acescc_encode, _AP0_TO_AP1, _AP1_TO_AP0
 
 CONFIG = "studio-config-v4.0.0_aces-v2.0_ocio-v2.5"
-DISPLAY, VIEW = "sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)"
+# Alcedo Studio default: Rec.709 primaries, gamma 2.2 encoding, 100 nit.
+DISPLAY, VIEW = "Gamma 2.2 Rec.709 - Display", "ACES 2.0 - SDR 100 nits (Rec.709)"
 
 
 def read_cube(path: Path) -> np.ndarray:
@@ -80,7 +82,9 @@ class Drt:
     def __call__(self, aces: np.ndarray) -> np.ndarray:
         buf = np.ascontiguousarray(aces.astype(np.float32).reshape(-1, 3))
         self.cpu.applyRGB(buf)
-        return np.clip(buf.reshape(aces.shape), 0.0, 1.0)
+        code = np.clip(buf.reshape(aces.shape).astype(np.float64), 0.0, 1.0)
+        # same display light, re-encoded as sRGB for files and colour metrics
+        return colour.cctf_encoding(code ** 2.2, function="sRGB")
 
 
 def with_lmt(aces: np.ndarray, table: np.ndarray) -> np.ndarray:

@@ -76,7 +76,7 @@ LMT = ACES2.0_SDR^-1 ∘ scan( print( negative(scene) ) )
 ```
 
 so that LMT + ACES 2.0 reproduces spektrafilm's print rendering. This is the same structure as the
-Fujifilm film-simulation LMTs converted in Resolve. The LMT is tied to ACES 2.0 SDR 100 nit Rec.709.
+Fujifilm film-simulation LMTs converted in Resolve. The LMT is tied to ACES 2.0 SDR 100 nit, Rec.709 primaries, gamma 2.2 encoding (the Alcedo Studio default display).
 
 Changes relative to the GUI rendering:
 - scanner white/black references on (paper white → 0.98, print Dmax → 0.005);

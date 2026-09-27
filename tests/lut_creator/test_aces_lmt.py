@@ -95,6 +95,10 @@ def test_bake_shape_and_cube_writer(tmp_path):
     lmt.write_cube(table, path, title="t", domain=(0.0, 1.0))
     text = path.read_text()
     assert "LUT_3D_SIZE 5" in text and "DOMAIN_MAX 1 1 1" in text
+    # SPEKTRAFILM_LICENSE.txt: every LUT names the author, source and license
+    assert "Andrea Volpato" in text and "github.com/andreavolpato/spektrafilm" in text and "CC BY-SA 4.0" in text
+    lmt.write_lut_license_files(tmp_path)
+    assert (tmp_path / "SPEKTRAFILM_LICENSE.txt").exists() and (tmp_path / "CHANGELOG.txt").exists()
 
 
 @pytest.mark.integration
@@ -109,4 +113,4 @@ def test_print_drt_neutralize_makes_grey_scale_neutral():
     assert np.abs(lab[:, 1:]).max() < 0.3
     np.testing.assert_allclose(lab[:, 0], lab0[:, 0], atol=0.2)  # lightness unchanged
     # inverse DRT makes it scene-referred: forward DRT reproduces the display
-    np.testing.assert_allclose(lmt._apply_cpu(model._drt, model.aces_out(grey)), model.display(grey), atol=2e-3)
+    np.testing.assert_allclose(lmt._apply_cpu(model._drt, model.aces_out(grey)), model._to_display_code(model.display(grey)), atol=2e-3)
