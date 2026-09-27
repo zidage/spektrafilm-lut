@@ -102,10 +102,11 @@ def test_bake_shape_and_cube_writer(tmp_path):
 
 
 @pytest.mark.integration
-def test_print_drt_neutralize_makes_grey_scale_neutral():
+@pytest.mark.parametrize("film", ["kodak_vision3_250d", "fujifilm_velvia_100"])
+def test_print_drt_neutralize_makes_grey_scale_neutral(film):
     import colour
-    model = lmt.PrintDRTModel(lmt.PrintDRTSpec(film_profile="kodak_vision3_250d", neutralize=True))
-    base = lmt.PrintDRTModel(lmt.PrintDRTSpec(film_profile="kodak_vision3_250d"))
+    model = lmt.PrintDRTModel(lmt.PrintDRTSpec(film_profile=film, neutralize=True))
+    base = lmt.PrintDRTModel(lmt.PrintDRTSpec(film_profile=film))
     stops = np.array([-4.0, -2.0, 0.0, 2.0, 4.0])
     grey = (0.18 * 2.0 ** stops)[:, None] * np.ones(3)
     lab = colour.XYZ_to_Lab(colour.sRGB_to_XYZ(model.display(grey)))

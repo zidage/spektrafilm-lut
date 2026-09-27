@@ -388,11 +388,16 @@ transforms. They are sampled from new export code (spektrafilm_lut_creator/aces_
 - *_adx_acescc_lmt_*: scene -> spektrafilm negative -> Academy Printing
   Density (SMPTE ST 2065-2) -> ADX16 (SMPTE ST 2065-3) -> Academy ADX16 IDT
   -> ACEScc. There is no print stage.
-- *_invACES2_acescc_lmt_*: scene -> spektrafilm negative -> print (or the
-  reversal film itself) -> scan -> inverse ACES 2.0 SDR 100 nit output
-  transform -> ACEScc. The scanner white and black references are on and
-  the runtime lightness roll-off is off. The tags _neutral, _hue<x> and
-  _chroma<x> in a file name identify optional colour corrections.
+- Brand_Film_Print[_calib].cube (e.g. Kodak_Vision3-250D_2383_NH.cube) and
+  *_invACES2_acescc_lmt_*: scene -> spektrafilm negative -> print (or the
+  reversal film itself, "Slide") -> scan -> inverse ACES 2.0 SDR 100 nit
+  output transform (Rec.709, gamma 2.2) -> ACEScc. The scanner white and
+  black references are on and the runtime lightness roll-off is off.
+  Print names: 2383, 2393 (Kodak Vision print film), Endura (Kodak Portra
+  Endura paper), CA (Fujifilm Crystal Archive Type II paper).
+  Calibration tags: N = neutral-scale correction of the dye densities,
+  H = hue_preserve toward the ACES 2.0 hue (the value is in the .cube
+  header), C = chroma gain. No tag = no correction.
 """
 
 
@@ -460,9 +465,9 @@ class PrintDRTSpec:
     # 0.7 (cam16ucs lightness_compression); with a DRT downstream that only
     # greys the paper white (display Y 0.73 instead of ~0.95), so it is off.
     lightness_compression: bool = False
-    # Remove the print's neutral-scale crossover: per-channel 1D remap of the
-    # print dye densities (a crossover-free print stock), solved so every
-    # grey of the scene prints neutral at unchanged luminance.
+    # Remove the neutral-scale crossover: per-channel 1D remap of the dye
+    # densities of the print (or of the slide for reversal film), solved so
+    # every grey of the scene is neutral at unchanged luminance.
     neutralize: bool = False
     # Display-side colour intent, in Oklab: rotate the film's hue towards the
     # plain DRT's hue by this fraction (0 = pure film, 1 = DRT hues with the
@@ -537,25 +542,26 @@ class PrintDRTModel:
             raise ValueError(f"unsupported display {spec.display!r}; use one of {list(_DISPLAY_GAMMA)}")
         self._drt = cfg.getProcessor(fwd).getDefaultCPUProcessor()
         self._inv_drt = cfg.getProcessor(inv).getDefaultCPUProcessor()
-        if self.reversal and spec.neutralize:
-            raise ValueError("neutralize works on print densities; not available for reversal film")
+        # The dye densities of the viewed image: the print, or the slide itself.
+        self._dye_tap = "cmy_film" if self.reversal else "cmy_print"
         self._neutral_maps = self._solve_neutral_maps() if spec.neutralize else None
 
-    # -- print density stage ------------------------------------------------
+    # -- dye density stage (print, or slide for reversal film) ---------------
 
     def _cmy_print(self, aces: np.ndarray) -> np.ndarray:
         img = np.fmax(np.asarray(aces, dtype=np.float64).reshape(1, -1, 3), 0.0) * 2.0 ** self.spec.exposure_ev
-        return np.asarray(self._pipeline.process(img, collect="cmy_print"), dtype=np.float64).reshape(-1, 3)
+        return np.asarray(self._pipeline.process(img, collect=self._dye_tap), dtype=np.float64).reshape(-1, 3)
 
     def _scan(self, cmy: np.ndarray) -> np.ndarray:
         out = self._pipeline.process(np.asarray(cmy, dtype=np.float64).reshape(1, -1, 3),
-                                     inject="cmy_print", collect="rgb_out")
+                                     inject=self._dye_tap, collect="rgb_out")
         return np.asarray(out, dtype=np.float64).reshape(-1, 3)
 
     def _solve_neutral_maps(self, n: int = 241, iters: int = 15, h: float = 0.01):
-        """Per-channel density maps D_c -> D'_c that print the grey scale neutral.
+        """Per-channel density maps D_c -> D'_c that make the grey scale neutral.
 
-        For every grey of the scene, Newton-solve the three print dye densities
+        For every grey of the scene, Newton-solve the three dye densities (print,
+        or slide for reversal film)
         whose scan is neutral (R = G = B) at the original luminance.
         """
         stops = np.linspace(-12.0, 12.0, n)
@@ -601,14 +607,10 @@ class PrintDRTModel:
 
     def display(self, aces: np.ndarray) -> np.ndarray:
         img = np.asarray(aces, dtype=np.float64)
-        if self.reversal:
-            rgb = self._pipeline.process(np.fmax(img.reshape(1, -1, 3), 0.0) * 2.0 ** self.spec.exposure_ev)
-            out = np.clip(np.asarray(rgb, dtype=np.float64).reshape(-1, 3), 0.0, 1.0)
-        else:
-            cmy = self._cmy_print(img)
-            if self._neutral_maps is not None:
-                cmy = self._apply_neutral_maps(cmy)
-            out = np.clip(self._scan(cmy), 0.0, 1.0)
+        cmy = self._cmy_print(img)
+        if self._neutral_maps is not None:
+            cmy = self._apply_neutral_maps(cmy)
+        out = np.clip(self._scan(cmy), 0.0, 1.0)
         if self.spec.hue_preserve or self.spec.chroma_gain != 1.0:
             out = self._colour_intent(img.reshape(-1, 3), out)
         return out.reshape(img.shape)
