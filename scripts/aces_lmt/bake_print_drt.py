@@ -20,10 +20,10 @@ for film in a.films:
                                    white_correction=not a.no_white, black_correction=not a.no_white,
                                    neutralize=a.neutralize, hue_preserve=a.hue_preserve, chroma_gain=a.chroma))
     table = bake_acescc_lmt(m, a.size, domain=(0.0, 1.0))
-    pr = m._pipeline.print.info.stock
+    pr = "slide" if m.reversal else m._pipeline.print.info.stock
     tag = ("_nowhite" if a.no_white else "") + ("_neutral" if a.neutralize else "")         + (f"_hue{a.hue_preserve:g}" if a.hue_preserve else "") + (f"_chroma{a.chroma:g}" if a.chroma != 1 else "")
     name = f"spektrafilm_{film}_{pr}{tag}_invACES2_acescc_lmt_{a.size}.cube"
-    write_cube(table, out / name, title=f"spektrafilm {film} > {pr} (inverse ACES 2.0 SDR) ACEScc LMT", domain=(0.0, 1.0),
-               comments=["EXPERIMENTAL: DRT^-1 o spektrafilm film->print->scan. Use only with ACES 2.0 SDR 100 nit Rec.709.",
+    write_cube(table, out / name, title=f"spektrafilm {film} > {pr} ACEScc LMT (for ACES 2.0 SDR)", domain=(0.0, 1.0),
+               comments=[("ACES2.0 SDR^-1 o spektrafilm reversal film -> scan." if m.reversal else "ACES2.0 SDR^-1 o spektrafilm film -> print -> scan.") + " Use only with the ACES 2.0 SDR 100 nit Rec.709 output transform.",
                          f"neutralize={a.neutralize} hue_preserve={a.hue_preserve} chroma_gain={a.chroma}"])
     print(f"{name}: {time.perf_counter()-t:.1f}s  range {table.min():.3f}..{table.max():.3f}")

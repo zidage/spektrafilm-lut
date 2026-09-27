@@ -458,9 +458,13 @@ class PrintDRTModel:
         from spektrafilm.runtime.pipeline import SimulationPipeline
 
         self.spec = spec
-        pr = spec.print_profile or load_profile(spec.film_profile).info.target_print or "kodak_2383"
+        info = load_profile(spec.film_profile).info
+        # Reversal (positive) film is viewed/scanned directly: no print stage.
+        self.reversal = info.type == "positive"
+        pr = spec.print_profile or info.target_print or "kodak_2383"
         p = init_params(film_profile=spec.film_profile, print_profile=pr)
         p.debug.lut_mode = True
+        p.io.scan_film = self.reversal
         p.io.input_color_space = "ACES2065-1"
         p.io.input_cctf_decoding = False
         p.io.output_color_space = "sRGB"
@@ -483,6 +487,8 @@ class PrintDRTModel:
                                         direction=ocio.TRANSFORM_DIR_INVERSE)
         self._drt = cfg.getProcessor(fwd).getDefaultCPUProcessor()
         self._inv_drt = cfg.getProcessor(inv).getDefaultCPUProcessor()
+        if self.reversal and spec.neutralize:
+            raise ValueError("neutralize works on print densities; not available for reversal film")
         self._neutral_maps = self._solve_neutral_maps() if spec.neutralize else None
 
     # -- print density stage ------------------------------------------------
@@ -545,10 +551,14 @@ class PrintDRTModel:
 
     def display(self, aces: np.ndarray) -> np.ndarray:
         img = np.asarray(aces, dtype=np.float64)
-        cmy = self._cmy_print(img)
-        if self._neutral_maps is not None:
-            cmy = self._apply_neutral_maps(cmy)
-        out = np.clip(self._scan(cmy), 0.0, 1.0)
+        if self.reversal:
+            rgb = self._pipeline.process(np.fmax(img.reshape(1, -1, 3), 0.0) * 2.0 ** self.spec.exposure_ev)
+            out = np.clip(np.asarray(rgb, dtype=np.float64).reshape(-1, 3), 0.0, 1.0)
+        else:
+            cmy = self._cmy_print(img)
+            if self._neutral_maps is not None:
+                cmy = self._apply_neutral_maps(cmy)
+            out = np.clip(self._scan(cmy), 0.0, 1.0)
         if self.spec.hue_preserve or self.spec.chroma_gain != 1.0:
             out = self._colour_intent(img.reshape(-1, 3), out)
         return out.reshape(img.shape)
