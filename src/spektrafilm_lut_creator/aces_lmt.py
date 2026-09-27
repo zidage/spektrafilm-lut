@@ -396,3 +396,75 @@ def write_cube(table: np.ndarray, path: Path, *, title: str,
     for rgb in table.reshape(-1, 3):
         lines.append(" ".join(f"{v:.8f}" for v in rgb))
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Experimental: full print chain made scene-referred through an inverse DRT
+#
+# LMT = DRT^-1 o scan(print(negative(scene))).  Applied before the same DRT the
+# system reproduces spektrafilm's display (print) rendering, which is the
+# structure of camera "film simulation" LMTs converted in Resolve.  It is tied
+# to the DRT it inverts (default: ACES 2.0 SDR 100 nit Rec.709 on sRGB).
+
+_OCIO_CONFIG = "studio-config-v4.0.0_aces-v2.0_ocio-v2.5"
+
+
+@dataclass
+class PrintDRTSpec:
+    film_profile: str = "kodak_vision3_250d"
+    print_profile: str | None = None  # default: the film's target print
+    exposure_ev: float = 0.0
+    white_correction: bool = True     # paper white -> display white_level
+    black_correction: bool = True     # print Dmax -> display black_level
+    white_level: float = 0.98
+    black_level: float = 0.005
+    # The runtime's output gamut compression also rolls lightness off above
+    # 0.7 (cam16ucs lightness_compression); with a DRT downstream that only
+    # greys the paper white (display Y 0.73 instead of ~0.95), so it is off.
+    lightness_compression: bool = False
+    display: str = "sRGB - Display"
+    view: str = "ACES 2.0 - SDR 100 nits (Rec.709)"
+
+
+class PrintDRTModel:
+    def __init__(self, spec: PrintDRTSpec):
+        import PyOpenColorIO as ocio
+        from spektrafilm.profiles.io import load_profile
+        from spektrafilm.runtime.params_builder import digest_params, init_params
+        from spektrafilm.runtime.pipeline import SimulationPipeline
+
+        self.spec = spec
+        pr = spec.print_profile or load_profile(spec.film_profile).info.target_print or "kodak_2383"
+        p = init_params(film_profile=spec.film_profile, print_profile=pr)
+        p.debug.lut_mode = True
+        p.io.input_color_space = "ACES2065-1"
+        p.io.input_cctf_decoding = False
+        p.io.output_color_space = "sRGB"
+        p.io.output_cctf_encoding = True
+        if not spec.lightness_compression:
+            from dataclasses import replace
+            p.io.output_gamut_compress = replace(p.io.output_gamut_compress, lightness_compression=None)
+        p = digest_params(p)
+        # lut_mode switches the scanner references off; they only depend on
+        # the stock reference densities (not on image content), so they are
+        # safe inside a static LUT.
+        p.scanner.white_correction = spec.white_correction
+        p.scanner.black_correction = spec.black_correction
+        p.scanner.white_level = spec.white_level
+        p.scanner.black_level = spec.black_level
+        self._pipeline = SimulationPipeline(p)
+        cfg = ocio.Config.CreateFromBuiltinConfig(_OCIO_CONFIG)
+        t = ocio.DisplayViewTransform(src="ACES2065-1", display=spec.display, view=spec.view,
+                                      direction=ocio.TRANSFORM_DIR_INVERSE)
+        self._inv_drt = cfg.getProcessor(t).getDefaultCPUProcessor()
+
+    def display(self, aces: np.ndarray) -> np.ndarray:
+        img = np.asarray(aces, dtype=np.float64)
+        out = self._pipeline.process(np.fmax(img.reshape(1, -1, 3), 0.0) * 2.0 ** self.spec.exposure_ev)
+        return np.clip(np.asarray(out, dtype=np.float64).reshape(img.shape), 0.0, 1.0)
+
+    def aces_out(self, aces: np.ndarray) -> np.ndarray:
+        return _apply_cpu(self._inv_drt, self.display(aces))
+
+    def acescc_lmt(self, acescc: np.ndarray) -> np.ndarray:
+        return np.clip(aces_to_acescc(self.aces_out(acescc_to_aces(acescc))), ACESCC_MIN, ACESCC_MAX)
