@@ -99,7 +99,7 @@ The 65³ cube with trilinear sampling agrees with the exact model: mean ΔE2000 
 
 These options exist in `PrintDRTSpec`. They are off by default because they remove part of the film character.
 
-- **`neutralize`:** The 2383 print has a crossover: the shadows at −2 stops are green (a\* −4.7) and the highlights at +2 to +4 stops are yellow (b\* +5 to +6.5). This option adds one 1D curve per channel on the print dye densities. A Newton solver makes each scene grey print neutral at the same L\*. The result is a crossover-free print stock.
+- **`neutralize`:** For reversal film, the solver works on the dye densities of the slide. The 2383 print has a crossover: the shadows at −2 stops are green (a\* −4.7) and the highlights at +2 to +4 stops are yellow (b\* +5 to +6.5). This option adds one 1D curve per channel on the print dye densities. A Newton solver makes each scene grey print neutral at the same L\*. The result is a crossover-free print stock.
 - **`hue_preserve`** (0 to 1): This option turns the film hue in Oklab toward the hue of ACES 2.0 alone. It keeps the film lightness and chroma. At 0.5, the mean hue error on a ColorChecker goes from 8.9° to 4.2°.
 - **`chroma_gain`:** This option multiplies the Oklab chroma.
 
@@ -109,6 +109,7 @@ These options exist in `PrintDRTSpec`. They are off by default because they remo
 |---|---|
 | `src/spektrafilm_lut_creator/aces_lmt.py` | New. Both models, APD/ADX math, ACEScc codec, LUT sampling, `.cube` writer with license header. |
 | `scripts/aces_lmt/bake_print_drt.py` | New. Makes print-chain LMTs (section 2). |
+| `scripts/aces_lmt/bake_alcedo_set.sh` | New. Makes the full set of 36 print-chain LMTs for Alcedo Studio. |
 | `scripts/aces_lmt/bake.py` | New. Makes ADX film-scan LMTs (section 1). |
 | `scripts/aces_lmt/evaluate.py` | New. Renders camera raw files (rawpy) through the LMTs and ACES 2.0 (OCIO), with the LUT sampling of Alcedo Studio. |
 | `scripts/aces_lmt/verify.py`, `analyze_luts.py`, `analyze_print_chain.py`, `probe_*.py` | New. Tone-scale, colour and ΔE measurements. |
@@ -172,6 +173,39 @@ git fetch upstream
 ## Make the LUTs
 
 The scripts write the LUTs to `experiment_results/`. Git ignores this folder. The repository does not contain `.cube` files. You make them on your computer.
+
+### File names
+
+The scripts give each print-chain LMT a short name: `Brand_Film_Print[_calib].cube`, for example `Kodak_Vision3-250D_2383_NH.cube`. The LUT title in the file is the same name.
+
+| Part | Values |
+|---|---|
+| Brand | `Kodak`, `Fuji` |
+| Film | `Vision3-250D`, `Portra400`, `Portra800P1` (push 1), `Pro400H`, `Velvia100`, ... |
+| Print | `2383`, `2393` (Kodak Vision print film), `Endura` (Kodak Portra Endura paper), `CA` (Fujifilm Crystal Archive Type II paper), `Slide` (reversal film, no print) |
+| Calib | No tag: no correction. `N`: `neutralize`. `H`: `hue_preserve` (the value is in the file header). `C`: `chroma_gain`. |
+
+Use `--long-names` to get the old descriptive file names.
+
+### Make the full set for Alcedo Studio
+
+This script makes 36 LUTs: 5 cine negatives × 2 print films, 8 Kodak and 3 Fujifilm still negatives × 2 papers, and 4 reversal films. Give the output folder and the options:
+
+```bash
+scripts/aces_lmt/bake_alcedo_set.sh experiment_results/luts_alcedo/plain
+```
+
+```bash
+scripts/aces_lmt/bake_alcedo_set.sh experiment_results/luts_alcedo/N --neutralize
+```
+
+```bash
+scripts/aces_lmt/bake_alcedo_set.sh experiment_results/luts_alcedo/NH --neutralize --hue-preserve 0.25
+```
+
+The `NH` set uses a small hue correction (0.25). It keeps most of the film colour. On a ColorChecker, the mean hue difference to ACES 2.0 changes from 8.9° to 6.1° for Vision3 250D → 2383.
+
+### Make one LUT
 
 Make one print-chain LMT (recommended):
 
