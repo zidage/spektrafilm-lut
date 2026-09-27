@@ -5,11 +5,11 @@ from spektrafilm.runtime.params_builder import init_params, digest_params
 from spektrafilm.runtime.pipeline import SimulationPipeline
 
 for film in sys.argv[1:] or ["kodak_vision3_250d"]:
-    m = NegativeADXModel(NegativeADXSpec(film_profile=film, balance="dmin"))
+    m = NegativeADXModel(NegativeADXSpec(film_profile=film, balance="none"))
     stops = np.array([-2.0, 0.0, 2.0, 4.0, 6.0])
     aces = (0.18 * 2.0 ** stops)[:, None] * np.ones(3)
     cmy = m.cmy_film(aces)
-    apd = m.apd_from_cmy(cmy)
+    apd = m.pd_from_cmy(cmy)
     p = init_params(film_profile=film, print_profile="kodak_2383")
     p.debug.lut_mode = True; p.io.input_color_space = "ACES2065-1"
     p = digest_params(p); pipe = SimulationPipeline(p)
