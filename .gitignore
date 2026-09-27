@@ -190,3 +190,5 @@ uv.lock
 
 # claude
 .claude
+# ACES LMT experiments (intermediate results, renders, downloaded refs)
+/experiment_results/
