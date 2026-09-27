@@ -65,3 +65,41 @@ python scripts/aces_lmt/probe_grey.py kodak_vision3_250d grey apd               
 The SMPTE ST 2065-2 data supplement (APD responsivities, influx spectrum) is downloaded from
 pub.smpte.org on first use and cached in `~/.cache/spektrafilm/smpte_st2065_2` (override with
 `SPEKTRAFILM_APD_DIR`). It is not redistributed in this repository.
+
+## Print-chain LMT through an inverse DRT (`PrintDRTModel`, recommended look)
+
+The ADX negative LMT is a *technical scan*: grey is not lifted, the mid-scale is slightly flatter than
+ACES 2.0 alone, and the "film look" of a print is missing. For a finished look, `PrintDRTModel` bakes
+
+```
+LMT = ACES2.0_SDR^-1 ∘ scan( print( negative(scene) ) )
+```
+
+so that LMT + ACES 2.0 reproduces spektrafilm's print rendering. This is the same structure as the
+Fujifilm film-simulation LMTs converted in Resolve. The LMT is tied to ACES 2.0 SDR 100 nit Rec.709.
+
+Changes relative to the GUI rendering:
+- scanner white/black references on (paper white → 0.98, print Dmax → 0.005);
+- the runtime's cam16ucs `lightness_compression` is off. With it on, paper white sits at display Y 0.73 (L* 88, dull highlights).
+
+Options:
+- `neutralize`: per-channel 1D remap of the print dye densities, Newton-solved so that every scene grey prints neutral
+  at unchanged L*. It removes the 2383 crossover (green −2 stops a* −4.7, yellow highlights b* +5…+6.5).
+- `hue_preserve` (0…1): rotates the film's Oklab hue toward the plain-DRT hue while keeping the film's lightness and chroma.
+- `chroma_gain`: scales Oklab chroma.
+
+Measured after ACES 2.0 (`analyze_luts.py`):
+
+| | grey L* | system contrast @grey | L* +4/+6 | C* ratio | mean \|dh\| |
+|---|---|---|---|---|---|
+| ACES 2.0 alone | 37.8 | 1.19 | 88/97 | 1.00 | 0° |
+| Fuji Pro Neg / Provia / Eterna (Resolve LMTs) | 45.9 / 45.7 / 45.8 | 1.44 / 1.45 / 1.44 | 92/99 | 1.10 / 1.37 / 0.96 | 2.5° / 3.9° / 4.4° |
+| ADX negative LMT (Vision3 250D) | 37.8 | 1.10 | 87/95 | 1.00 | 8.0° |
+| Vision3 250D → 2383, inverse ACES 2.0 | 48.1 | 1.32 | 95/98 | 1.12 | 8.9° |
+| … + `neutralize` + `hue_preserve 0.5` | 48.1 | 1.32 | 95/98 | 1.14 | 4.2° |
+| Pro 400H → Crystal Archive, `neutralize` + `hue_preserve 0.5` | 48.7 | 1.54 | 98/98 | 1.24 | 2.9° |
+
+```bash
+python scripts/aces_lmt/bake_print_drt.py kodak_vision3_250d --neutralize --hue-preserve 0.5   # → experiment_results/luts_print
+python scripts/aces_lmt/analyze_luts.py --luts <cubes…>
+```

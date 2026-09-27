@@ -422,8 +422,32 @@ class PrintDRTSpec:
     # 0.7 (cam16ucs lightness_compression); with a DRT downstream that only
     # greys the paper white (display Y 0.73 instead of ~0.95), so it is off.
     lightness_compression: bool = False
+    # Remove the print's neutral-scale crossover: per-channel 1D remap of the
+    # print dye densities (a crossover-free print stock), solved so every
+    # grey of the scene prints neutral at unchanged luminance.
+    neutralize: bool = False
+    # Display-side colour intent, in Oklab: rotate the film's hue towards the
+    # plain DRT's hue by this fraction (0 = pure film, 1 = DRT hues with the
+    # film's lightness/chroma), and scale chroma.
+    hue_preserve: float = 0.0
+    chroma_gain: float = 1.0
     display: str = "sRGB - Display"
     view: str = "ACES 2.0 - SDR 100 nits (Rec.709)"
+
+
+def _srgb_decode(enc: np.ndarray) -> np.ndarray:
+    import colour
+    return colour.cctf_decoding(np.fmax(enc, 0.0), function="sRGB")
+
+
+def _srgb_to_oklab(enc: np.ndarray) -> np.ndarray:
+    import colour
+    return colour.XYZ_to_Oklab(colour.sRGB_to_XYZ(enc))
+
+
+def _oklab_to_srgb(lab: np.ndarray) -> np.ndarray:
+    import colour
+    return colour.XYZ_to_sRGB(colour.Oklab_to_XYZ(lab))
 
 
 class PrintDRTModel:
@@ -454,14 +478,95 @@ class PrintDRTModel:
         p.scanner.black_level = spec.black_level
         self._pipeline = SimulationPipeline(p)
         cfg = ocio.Config.CreateFromBuiltinConfig(_OCIO_CONFIG)
-        t = ocio.DisplayViewTransform(src="ACES2065-1", display=spec.display, view=spec.view,
-                                      direction=ocio.TRANSFORM_DIR_INVERSE)
-        self._inv_drt = cfg.getProcessor(t).getDefaultCPUProcessor()
+        fwd = ocio.DisplayViewTransform(src="ACES2065-1", display=spec.display, view=spec.view)
+        inv = ocio.DisplayViewTransform(src="ACES2065-1", display=spec.display, view=spec.view,
+                                        direction=ocio.TRANSFORM_DIR_INVERSE)
+        self._drt = cfg.getProcessor(fwd).getDefaultCPUProcessor()
+        self._inv_drt = cfg.getProcessor(inv).getDefaultCPUProcessor()
+        self._neutral_maps = self._solve_neutral_maps() if spec.neutralize else None
+
+    # -- print density stage ------------------------------------------------
+
+    def _cmy_print(self, aces: np.ndarray) -> np.ndarray:
+        img = np.fmax(np.asarray(aces, dtype=np.float64).reshape(1, -1, 3), 0.0) * 2.0 ** self.spec.exposure_ev
+        return np.asarray(self._pipeline.process(img, collect="cmy_print"), dtype=np.float64).reshape(-1, 3)
+
+    def _scan(self, cmy: np.ndarray) -> np.ndarray:
+        out = self._pipeline.process(np.asarray(cmy, dtype=np.float64).reshape(1, -1, 3),
+                                     inject="cmy_print", collect="rgb_out")
+        return np.asarray(out, dtype=np.float64).reshape(-1, 3)
+
+    def _solve_neutral_maps(self, n: int = 241, iters: int = 15, h: float = 0.01):
+        """Per-channel density maps D_c -> D'_c that print the grey scale neutral.
+
+        For every grey of the scene, Newton-solve the three print dye densities
+        whose scan is neutral (R = G = B) at the original luminance.
+        """
+        stops = np.linspace(-12.0, 12.0, n)
+        grey = (0.18 * 2.0 ** stops)[:, None] * np.ones(3)
+        d0 = self._cmy_print(grey)
+        y0 = _srgb_decode(self._scan(d0)) @ np.array([0.2126, 0.7152, 0.0722])
+        target = np.log(np.fmax(y0, 1e-6))[:, None]
+
+        def resid(d):
+            return np.log(np.fmax(_srgb_decode(self._scan(d)), 1e-6)) - target
+
+        d = d0.copy()
+        for _ in range(iters):
+            f = resid(d)
+            if np.max(np.abs(f)) < 1e-4:
+                break
+            jac = np.empty((n, 3, 3))
+            for k in range(3):
+                dk = d.copy()
+                dk[:, k] += h
+                jac[:, :, k] = (resid(dk) - f) / h
+            step = np.linalg.solve(jac + 1e-6 * np.eye(3), f[..., None])[..., 0]
+            d = d - np.clip(step, -0.2, 0.2)
+        self.neutral_residual = np.abs(resid(d)).max(axis=1)
+        maps = []
+        for c in range(3):
+            x, idx = np.unique(d0[:, c], return_index=True)
+            maps.append((x, d[idx, c]))
+        return maps
+
+    def _apply_neutral_maps(self, cmy: np.ndarray) -> np.ndarray:
+        out = np.empty_like(cmy)
+        for c, (x, y) in enumerate(self._neutral_maps):
+            v = cmy[:, c]
+            r = np.interp(v, x, y)
+            # outside the solved range keep the end offset (no flattening)
+            r = np.where(v < x[0], v + (y[0] - x[0]), r)
+            r = np.where(v > x[-1], v + (y[-1] - x[-1]), r)
+            out[:, c] = r
+        return out
+
+    # -- display and LMT ----------------------------------------------------
 
     def display(self, aces: np.ndarray) -> np.ndarray:
         img = np.asarray(aces, dtype=np.float64)
-        out = self._pipeline.process(np.fmax(img.reshape(1, -1, 3), 0.0) * 2.0 ** self.spec.exposure_ev)
-        return np.clip(np.asarray(out, dtype=np.float64).reshape(img.shape), 0.0, 1.0)
+        cmy = self._cmy_print(img)
+        if self._neutral_maps is not None:
+            cmy = self._apply_neutral_maps(cmy)
+        out = np.clip(self._scan(cmy), 0.0, 1.0)
+        if self.spec.hue_preserve or self.spec.chroma_gain != 1.0:
+            out = self._colour_intent(img.reshape(-1, 3), out)
+        return out.reshape(img.shape)
+
+    def _colour_intent(self, aces: np.ndarray, film: np.ndarray) -> np.ndarray:
+        ref = np.clip(_apply_cpu(self._drt, aces * 2.0 ** self.spec.exposure_ev), 0.0, 1.0)
+        lab_f, lab_r = _srgb_to_oklab(film), _srgb_to_oklab(ref)
+        c_f = np.hypot(lab_f[:, 1], lab_f[:, 2])
+        h_f = np.arctan2(lab_f[:, 2], lab_f[:, 1])
+        c_r = np.hypot(lab_r[:, 1], lab_r[:, 2])
+        h_r = np.arctan2(lab_r[:, 2], lab_r[:, 1])
+        dh = (h_r - h_f + np.pi) % (2 * np.pi) - np.pi
+        # hue of near-neutrals is undefined: fade the rotation in with chroma
+        w = self.spec.hue_preserve * np.clip(np.minimum(c_r, c_f) / 0.03, 0.0, 1.0)
+        h = h_f + w * dh
+        c = c_f * self.spec.chroma_gain
+        lab = np.stack([lab_f[:, 0], c * np.cos(h), c * np.sin(h)], axis=-1)
+        return np.clip(_oklab_to_srgb(lab), 0.0, 1.0)
 
     def aces_out(self, aces: np.ndarray) -> np.ndarray:
         return _apply_cpu(self._inv_drt, self.display(aces))

@@ -95,3 +95,18 @@ def test_bake_shape_and_cube_writer(tmp_path):
     lmt.write_cube(table, path, title="t", domain=(0.0, 1.0))
     text = path.read_text()
     assert "LUT_3D_SIZE 5" in text and "DOMAIN_MAX 1 1 1" in text
+
+
+@pytest.mark.integration
+def test_print_drt_neutralize_makes_grey_scale_neutral():
+    import colour
+    model = lmt.PrintDRTModel(lmt.PrintDRTSpec(film_profile="kodak_vision3_250d", neutralize=True))
+    base = lmt.PrintDRTModel(lmt.PrintDRTSpec(film_profile="kodak_vision3_250d"))
+    stops = np.array([-4.0, -2.0, 0.0, 2.0, 4.0])
+    grey = (0.18 * 2.0 ** stops)[:, None] * np.ones(3)
+    lab = colour.XYZ_to_Lab(colour.sRGB_to_XYZ(model.display(grey)))
+    lab0 = colour.XYZ_to_Lab(colour.sRGB_to_XYZ(base.display(grey)))
+    assert np.abs(lab[:, 1:]).max() < 0.3
+    np.testing.assert_allclose(lab[:, 0], lab0[:, 0], atol=0.2)  # lightness unchanged
+    # inverse DRT makes it scene-referred: forward DRT reproduces the display
+    np.testing.assert_allclose(lmt._apply_cpu(model._drt, model.aces_out(grey)), model.display(grey), atol=2e-3)
