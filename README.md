@@ -1,442 +1,261 @@
-![spektrafilm banner](img/readme/banner.jpg)
-
-> [!WARNING]
->
-> **I love building spektrafilm**, and I invested already hundreds of hours in it. Right now it’s a nights-and-weekends project. If it will help pay some bills, I can keep improving it for everyone. 🙂 Any **support** is really appreciated: [Buy me a coffee](https://buymeacoffee.com/andreavolpato)
-> 
-> **2026/05/28 big git history cleanup** (140MB -> 45MB) --> please reclone!
-> 
-
-# Spectral film simulations of analog photography
-
-An exploration of how to make good use of spectroscopic data from manufacturer datasheets in an end-to-end, physically based model with spectral calculations, with the goal of turning that data into convincing film, print, and scan renderings that can be explored interactively.
-
-Here are some useful links and spin-off projects:
-- Discussion about the project is happeing at [discuss.pixls.us](https://discuss.pixls.us/c/software/spektrafilm/).
-- Join us at the official [subreddit](https://www.reddit.com/r/spektrafilm/).
-- A [high-level writeup](https://discuss.pixls.us/t/spectral-film-simulations-from-scratch/) is available as a gentle entrypoint to the spectral framework.
-- Vote [your next stock](https://discuss.pixls.us/t/2026-q2-data-sheets-digitization-campaign/58032) you would like to see in spektrafilm.
-- A blazing fast Vulkan implementation is available in [vkdt](https://jo.dreggn.org/vkdt/src/pipe/modules/filmsim/readme.html) by [hanatos](https://github.com/hanatos).
-- An [OFX plugin](https://spektrafilm.114c.de/) was developed by [Aedan](https://github.com/chaert-s).
-- A fast [rust implementaion](https://github.com/turbasvin/spektrafilm-rs) is being developed by [turbasvin](https://github.com/turbasvin).
-- A LUT-based bridge is available in [ART](https://artraweditor.github.io/SpectralFilmSimHowto) by [agriggio](https://github.com/agriggio).
-
-
-In practice, this Python repository is **the reference implementation** for other developments, and the place where I am growing the underlying model. It lets you start from a camera image, pass it through a virtual negative, print, and scan pipeline, and inspect how film-stock data, couplers, enlarger settings, grain, halation, and other photographic effects shape the final result. The aim is not just to imitate a generic "film look," but to build a model that is grounded in measurements and predicts real-world behaviors of photographic materials.
-
-![Example of GUI interface with color test
-image.](img/readme/gui_screenshot.png)
-
-The desktop GUI exposes the Python tech-demo functionality without writing code,
-letting you import RAW files or prepared linear images, explore different film
-and paper profiles, adjust the simulation interactively, and move quickly
-between fast(-ish) previews and more detailed final scans. Full resolution
-export is very slow at the moment.
+# spektrafilm-lut — ACES LMT export for spektrafilm
 
 > [!IMPORTANT]
->   spektrafilm (all lower caps) is open for research, integration, and production use. The project is in rapid development, some ares are still being build and will change fast.
+> **This repository is a fork of [spektrafilm](https://github.com/andreavolpato/spektrafilm) by Andrea Volpato.**
 >
-> If you find it useful:
->  * Acknowledge spektrafilm in plugin descriptions, marketing, or credits (e.g.
->    "film modeling powered by `spektrafilm`" or "film modeling inspired by
->    `spektrafilm`", see `CITATION.cff`).
->  * Consider starring the repo or sharing your results.
->  * Cite the repo/Zenodo DOI in academic work (see `CITATION.cff`).
->  * Consider [buying me a coffee](https://www.buymeacoffee.com/andreavolpato) to fuel the next all-nighter coding session :)
+> - spektrafilm is the work of **Andrea Volpato**. All physical models, film profiles, print profiles and the runtime come from his project.
+> - The source code is licensed under the **GNU GPLv3** ([LICENSE](LICENSE)).
+> - The film profiles and all LUTs made from them are licensed under **CC BY-SA 4.0** with the spektrafilm preamble ([SPEKTRAFILM_LICENSE.txt](SPEKTRAFILM_LICENSE.txt)). Each LUT must name Andrea Volpato and link to https://github.com/andreavolpato/spektrafilm.
+> - To cite spektrafilm, use [CITATION.cff](CITATION.cff).
+> - This fork is not an official spektrafilm release. Andrea Volpato does not maintain or endorse it. Send questions about this fork to this repository, not to the original project.
+> - You can support the original author here: [Buy me a coffee](https://buymeacoffee.com/andreavolpato).
 >
->  *The project is GPLv3 licensed*, so any derivative work must also be open source under the same license. Derivatve work includes any software, plugin, or tool that incorporates spektrafilm code or is directly inspired by its methods.
->
-> *JSON profiles and LUTs are CC BY-SA 4.0.*
->  
->  If *GPLv3 is not compatible with your project*, please reach out to discuss
->  alternative options. I am very open to collaboration and integration, but I
->  want to ensure that spektrafilm remains open source and for the community. 
->
-> LUTs are on a strict "*commercial use, free share, no resale*" custom [license](SPEKTRAFILM_LICENSE.txt).
->
->  This helps sustain open color science. Thanks!
+> **Original README:** [README_UPSTREAM.md](README_UPSTREAM.md). Read it for the spektrafilm model, the GUI and the full documentation.
 
+This fork adds one function to spektrafilm: it exports the film simulation as an **ACEScc → ACEScc look modification transform (LMT)**. You apply this LMT as a 3D LUT in an ACES pipeline, before the output transform (DRT). The target application is [Alcedo Studio](https://github.com/zidage/AlcedoStudio).
 
-## Introduction
+## Where the changes are
 
-The simulation emulates negative or positive film emulsions starting from
-published data for film stocks. An example of the curves for Kodak Portra 400
-(data-sheet e4050, 2016) is shown in the following figure (note that the CMY
-diffuse densities are generic because they are usually not published).
-
-![Data extracted from the datasheet of Kodak Portra
-400](img/readme/example_data_kodak_portra_400.png)
-
-An example of data for Kodak Portra Endura print paper (data-sheet e4021, 2009)
-is shown in the next figure.
-
-![Data extracted from the datasheet of Kodak Ektacolor
-Edge](img/readme/example_data_kodak_portra_endura.png)
-
-The left panel shows the spectral log sensitivities of each color layer. The
-central panel shows the log-exposure-density characteristic curves for each
-layer when the medium is exposed to a neutral gray gradient under a reference
-light. The panel on the right shows the absorption spectra of the dyes formed on
-the medium during chemical development. 'Min' and 'Mid' are the absorption
-values for the unexposed processed medium and a neutral gray "middle" exposure,
-respectively.
-
-Starting from linear RGB data from a camera RAW file, the simulation
-reconstructs the spectral data, projects the virtual light transmitted through
-the negative onto print paper, and uses a simplified color enlarger with
-dichroic filters to balance the print. Finally, it scans the virtual print using
-the light reflected from the print.
-
-The pipeline is sketched in this figure, adapted from [^1]: ![The color
-photography process.](img/readme/pipeline_color_digital_management.png) Here,
-light from a scene (a RAW file from your camera) is exposed onto a virtual
-negative with specific spectral sensitivities, then a chemical process creates
-the dye densities using density curves and more complex interactions that model
-the couplers. The virtual negative is projected with a specific illuminant onto
-paper that is developed again with simple density curves and no couplers in this
-case. Print paper is already designed to reduce channel cross-talk, since it
-does not need to sample a scene, only the dyes on the negative.
-
-The pipeline allows many characteristics to be added in a physically sound way.
-For example:
-
-- halation
-- film grain generated on the negative (using a stochastic model)
-- pre-flashing of the print to retain highlights
-
-From my experience experimenting with film simulation, data-sheet curves are
-really not enough to reproduce a decent film look. The key is to understand that
-film emulsions contain couplers, chemicals that are produced during development
-alongside the actual CMY dyes, and these are very important for achieving the
-desired saturation. The main ones are:
-
-- masking couplers, which give the typical orange color to unexposed developed
-film. These couplers are consumed locally where density is formed and are used
-to reduce the effect of cross-talk in layer absorption, thus increasing
-saturation. The presence of masking couplers is simulated with a negative
-absorption contribution in the isolated dye absorption spectra. See, for
-example, data for Portra 400 updated to include the masking couplers and with
-unmixed print density characteristic curves: ![Portra 400 data modified for
-masking couplers and unmixing of
-densities.](img/readme/example_data_kodak_portra_400_couplers.png)
-
-- direct inhibitor couplers, which are released locally when density is formed
-  and inhibit the formation of density in nearby layers or in the same layer.
-  This increases saturation and contrast. Also, if we let the couplers diffuse
-  in space, they can increase local contrast and perceived sharpness.
-
-A more detailed description of colour couplers can be found in Chapter 15 of
-Hunt's book [^2].
-
-## Package layout
-
-The codebase is organized as three packages under `src/`:
-
-1. [src/spektrafilm](src/spektrafilm): runtime simulation pipeline (the
-   physical-pipeline core). Linear-in / linear-out, no GUI or LUT concerns.
-2. [src/spektrafilm_gui](src/spektrafilm_gui): desktop Qt + napari GUI built on
-   top of the runtime.
-3. [src/spektrafilm_lut_creator](src/spektrafilm_lut_creator): LUT bake + QA +
-   OCIO config emission. Builds `.cube` / `.3dl` / Hald-CLUT PNG bundles in
-   1-LUT / 2-LUT / 3-LUT / 4-LUT topologies with optional standalone OCIO 2
-   configs for pipeline integration. Drives via the `spektrafilm-lut`
-   command-line tool or the Python `BundleBuilder` API.
-
-Canonical import surfaces:
-
-1. Runtime API:
-   [src/spektrafilm/runtime/api.py](src/spektrafilm/runtime/api.py).
-2. GUI entry point: [src/spektrafilm_gui/app.py](src/spektrafilm_gui/app.py).
-3. LUT bundle builder:
-   [src/spektrafilm_lut_creator/builders.py](src/spektrafilm_lut_creator/builders.py).
-
-Minimal runtime API:
-
-```python
-from spektrafilm import create_params, simulate
-
-params = create_params(
-	film_profile="kodak_portra_400",
-	print_profile="kodak_portra_endura",
-)
-result = simulate(image, params)
-```
-
-Minimal LUT-bake API:
-
-```python
-from spektrafilm_lut_creator.builders import BundleBuilder
-from spektrafilm_lut_creator.bundles import BundleSpec
-
-spec = BundleSpec(
-      film_profile="kodak_portra_400",
-      print_profiles=("kodak_portra_endura",),
-      input_color_space="Panasonic V-Log",
-      output_color_space="sRGB",
-      topology="1lut",
-      resolution=33,
-      ocio_config=True,   # opt-in: also emit a standalone OCIO 2 config
-      qa=True,            # opt-in: run the QA suite and emit report.html
-      target="lumix_reatlime_vlog",  # special .cube files for lumix realtime 
-)
-builder = BundleBuilder(spec)
-builder.write(builder.build())   # lands in build/lut_bundles/<auto-name>/
-```
-
-Equivalent on the command line — color spaces accept canonical
-registry names or `short_tag` slugs (`vlog`, `srgb`, `acescg`, ...):
-
-```bash
-spektrafilm-lut build \
-	--film kodak_portra_400 \
-	--print kodak_portra_endura \
-	--input vlog --output srgb \
-	--topology 1lut \
-   --resolution 33 \
-	--qa \
-   --ocio-config \
-	--out ./build/lut_bundles/
-
-spektrafilm-lut list film         # discover registered profiles
-spektrafilm-lut list print        # discover registered profiles
-spektrafilm-lut list input        # discover input color spaces
-spektrafilm-lut list output       # discover output color spaces
-spektrafilm-lut list target       # discover supported target (eg lumix realtime)
-```
-
-For complex specs (nested gamut-compression settings, multi-paper
-bundles), pass `--from spec.toml` to load the full `BundleSpec` from
-a TOML file.
-
-Dependency direction:
-
-1. `spektrafilm_gui` depends on `spektrafilm`.
-2. `spektrafilm_lut_creator` depends on `spektrafilm`.
-3. `spektrafilm` (runtime) does not depend on any of the higher-level packages.
-
-## Installation
-
-> [!NOTE] 
-> Since spektrafilm is not compatible with the latest Python version, an
-> older version like 3.13 must be used.
-
-I reccomend to install spektrafilm with `conda`+`pip` for now, just because it 
-is my current workflow and thus it has more chances to be tested right after 
-commit.
-
-### Using `uv`
-
-You can easily run the latest version of spektrafilm directly from the Git
-repository using [uv](https://docs.astral.sh/uv/). The default install now
-includes the desktop GUI and LUT-creator dependencies; only development tools
-remain optional:
-
-```bash
-uvx --python 3.13 --from git+https://github.com/andreavolpato/spektrafilm.git spektrafilm
-```
-
-Or from a local working copy:
-```bash
-uvx --python 3.13 --from /path/to/local/working_copy spektrafilm
-```
-
-Alternatively, you can install spektrafilm permanently which will provide you
-the `spektrafilm` command:
-
-```bash
-uv tool install --python 3.13 git+https://github.com/andreavolpato/spektrafilm.git
-```
-
-For full development, install the project with `[dev]` to add the test tooling
-on top of the default install.
-
-#### Installing uv
-
-Under Windows you can install `uv` using the following command, which you only
-need to execute once:
-```bash
-# ! you only need to exeucte this command the first time to install uv!
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-Instructions for macOS and Linux are
-[here](https://docs.astral.sh/uv/getting-started/installation/#standalone-installer).
-
-
-### Using `pip`
-
-You can also use `pip` normally. The default install already includes the GUI
-and LUT-creator dependencies; `dev` is the only remaining optional extra.
-
-```bash
-# install the default package (desktop app + LUT creator included):
-git clone https://github.com/andreavolpato/spektrafilm.git
-cd spektrafilm
-pip install -e .
-
-# run
-spektrafilm
-```
-I recommend creating a clean virtual environment to install the dependencies,
-for example by using `conda`.
-
-#### Using `conda`
-From a terminal:
-
-```bash
-conda create -n spektrafilm python=3.13
-conda activate spektrafilm
-```
-
-Install the package `spektrafilm` by going to the repository
-folder and running:
-
-```bash
-pip install -e .
-```
-Launch the GUI by activating the environment and:
-
-```bash
-spektrafilm
-```
-To remove the environment:
-```bash
-conda env remove -n spektrafilm
-```
-
-### Install options
-
-| Install command | What you get |
+| Branch | Contents |
 |---|---|
-| `pip install -e .` | Default install: core runtime + GUI + LUT creator. Provides both the `spektrafilm` and `spektrafilm-lut` commands. |
-| `pip install -e ".[dev]"` | Default install + test tooling (`pytest`, OCIO config validation). |
+| `aces-adx-lmt` | **All changes of this fork.** Use this branch. |
+| `main` | The upstream spektrafilm code, plus this README and the README backup. There are no code changes. |
 
-The same `[extras]` syntax works with `uv pip install` and `uv tool install`.
-For one-off runs with `uvx`, use `--from` as shown above.
+The fork starts at upstream commit `3bb2c2d` ("fix: vlog midgray exposure"). The `upstream` remote points to https://github.com/andreavolpato/spektrafilm.
 
-> [!NOTE]
-> On Windows PowerShell and on macOS zsh, quote the brackets to prevent
-> shell glob expansion: `pip install -e ".[dev]"`.
+## Background: the problem
 
-## Testing
+Alcedo Studio applies a look LUT in ACEScc (AP1 primaries), before the DRT. The DRT is ACES 2.0 or OpenDRT.
 
-Install the default package plus the dev tooling, then run the test suite:
+The spektrafilm LUT creator makes **display-referred** LUTs. Such a LUT contains the full film → print → scan chain, so its output is already a finished display image. When you apply it as an LMT, the DRT then does a second tone mapping on that image. We measured this result:
 
-```bash
-pip install -e ".[dev]"
-python -m pytest tests -v
+- The paper white of the print stays at display L\* 84–88. The highlights never become white.
+- The tone scale becomes flat above +3 stops. The image looks clipped and the exposure looks incorrect.
+
+This fork gives two solutions. Section 1 is a technical film scan. Section 2 is the recommended look.
+
+## 1. ADX film-scan LMT (technical scan)
+
+Code: `NegativeADXModel` in [src/spektrafilm_lut_creator/aces_lmt.py](https://github.com/zidage/spektrafilm-lut/blob/aces-adx-lmt/src/spektrafilm_lut_creator/aces_lmt.py).
+
+This model follows the motion-picture scan workflow. It uses the negative only. There is no print stage.
+
+```
+ACEScc → ACES2065-1 (the scene, the "real world")
+  → spektrafilm: expose the negative, develop it (tap cmy_film)
+  → spectral density of the negative (dye spectra + base/mask)
+  → Academy Printing Density, APD (SMPTE ST 2065-2, equation 1)
+  → ADX16 code values (SMPTE ST 2065-3: gains 1.00/0.92/0.95, Dmin at 1520)
+  → Academy ADX16 IDT (OCIO builtin ADX16_to_ACES2065-1)
+  → ACES2065-1 → ACEScc
 ```
 
-Regression snapshots are stored as committed `.npz` files in `tests/baselines/`
-and are checked by `tests/test_regression_baselines.py`. When a simulation
-change is intentional, regenerate snapshots manually:
+Calibration steps. Each step is a real laboratory operation.
 
-```bash
-python scripts/regenerate_test_baselines.py
+- **Dmin:** The virtual scanner puts the unexposed negative at the ADX aim (ADX16 1520).
+- **Grey balance (`balance="grey"`):** Per-layer camera CC filtration makes an exposed 18 % grey card neutral. A Newton solver finds the filtration. Then one scalar ACES gain puts the grey at 0.18.
+- **Printing-density metric:** `apd` uses the official ST 2065-2 responsivities. `print` uses the target print stock of spektrafilm under its printer lamp.
+- **Per-stock calibration (`calibration="gamma"`):** This is optional. It equalizes the mid-scale channel gammas. Use it for still-photo negatives.
+
+Results:
+
+- The printing-density gamma of Vision3 250D is approximately 0.53. The Academy IDT expects 0.55. Thus ADX and Vision3 agree.
+- Mid grey stays at 0.18 (error < 0.02 stop).
+- The negative keeps the scene dynamic range: +10 stops of scene exposure give approximately +7 stops of output, with a smooth film shoulder.
+- **Limit:** The IDT makes the negative tone scale linear again. The result is a flat technical image with a mid-scale contrast of 1.10, which is lower than ACES 2.0 alone (1.19). The "film look" comes from the print, and this model has no print.
+
+The first run downloads the SMPTE ST 2065-2 data supplement from pub.smpte.org. The code caches it in `~/.cache/spektrafilm/smpte_st2065_2`. You can change this folder with the `SPEKTRAFILM_APD_DIR` environment variable. This repository does not contain the SMPTE data.
+
+## 2. Print-chain LMT through the inverse ACES 2.0 output transform (recommended)
+
+Code: `PrintDRTModel` in [src/spektrafilm_lut_creator/aces_lmt.py](https://github.com/zidage/spektrafilm-lut/blob/aces-adx-lmt/src/spektrafilm_lut_creator/aces_lmt.py).
+
+```
+LMT = (ACES 2.0 SDR output transform)⁻¹ ∘ scan( print( negative(scene) ) )
 ```
 
-Snapshot files are never updated automatically during pytest runs.
+In Alcedo Studio, the ACES 2.0 output transform comes after the LMT. The inverse in the LUT and the forward transform in Alcedo Studio cancel each other. Thus the screen shows the spektrafilm print image. The LMT only encodes this image as scene-referred ACEScc data. Camera "film simulation" LUTs that are converted in DaVinci Resolve use the same structure.
 
-## GUI
-When launching the GUI, a `napari` window should appear. Note that `napari` is
-not color-managed. The way I work is to set the screen and operating system
-color profile to sRGB, and I set the output color space of the simulation to
-sRGB. On Windows, the GUI will try to get the display profile and convert the
-final image for viewing; if successful, this will be indicated in the status
-bar.
+Changes relative to the spektrafilm GUI rendering:
 
-You can import camera RAW files directly from the `import raw` section. Choose
-the white balance mode (`as shot`, `daylight`, `tungsten`, or `custom`), set
-temperature and tint when using `custom`, then click `select file`. The RAW
-importer uses `rawpy` and converts the image to the current `input color space`
-and `apply CCTF decoding` settings. You can use `reprocess raw` to reload the
-same file and reprocess it with the new settings.
+- **Scanner white and black references are on.** The paper white goes to display 0.98. The print Dmax goes to display 0.005. These references come from the film and print reference densities only, not from image content, so a static LUT can contain them.
+- **The runtime lightness roll-off is off** (`lightness_compression` of the cam16ucs output gamut compression). With this roll-off on, the paper white is at display Y 0.73 (L\* 88) and the highlights look dull. With it off, the paper white is at Y 0.95 (L\* 98).
+- **Reversal film** (Velvia, Provia, Ektachrome, Kodachrome) does not go through a print. The model scans the slide directly.
+- **Display:** The inverse is made for ACES 2.0 SDR 100 nit, Rec.709 primaries, gamma 2.2 encoding. This is the default display setting of Alcedo Studio.
 
-> [!TIP] 
-> Hover over the widgets and controls to see a helpful tooltip.
+Measured results after ACES 2.0 SDR (script `analyze_luts.py`):
 
-You can still load externally prepared linear images through the `file loader`.
-This is useful if you want a fully manual raw-development workflow or if you
-prefer preprocessing in another tool. For best results, keep the image
-scene-referred and linear, ideally as a 16-bit or 32-bit float TIFF/EXR in a
-wide-gamut color space such as linear Rec2020 or linear ProPhoto RGB.
+| LMT | Mid grey L\* | System contrast at grey | L\* at +4 / +6 stops |
+|---|---|---|---|
+| No LMT (ACES 2.0 only) | 37.8 | 1.19 | 88 / 97 |
+| Fujifilm film simulations, converted in Resolve (Pro Neg, Provia, Eterna) | 45.7–45.9 | 1.44–1.45 | 91–92 / 99 |
+| ADX film-scan LMT, Vision3 250D | 37.8 | 1.10 | 87 / 95 |
+| Print-chain LMT, Vision3 250D → 2383 | 48.1 | 1.32 | 95 / 98 |
+| Print-chain LMT, 36 film/print pairs | 46–49 | 1.25–2.07 | 95–98 / 97–98 |
 
-> [!IMPORTANT] 
-> The `file loader` imports 16-bit and 32-bit image files as new
-> layers using OpenImageIo. PNG, TIFF, and EXR are known to work, and other
-> formats may work too.
+The 65³ cube with trilinear sampling agrees with the exact model: mean ΔE2000 0.07, p99 0.46, in the valid input range.
 
-Please bear in mind that this is a highly experimental project, and many
-controls are exposed in the GUI with little or no documentation. Use the
-tooltips by hovering over the controls, or explore the code. Adjust
-`exposure_compensation_ev` to change the exposure of the negative. You can
-visualize a virtual scan of the negative by pressing `scan_film` and
-`PREVIEW/SCAN`.
+### Optional print corrections (off by default)
 
-For fine-tuning halation, adjust `scattering size`, `scattering strength`,
-`halation size`, and `halation strength`. There are three controls for each,
-defining the effect on the three color channels (RGB). `scattering size` and
-`halation size` represent the sigma value for Gaussian blurring. `scattering
-strength` and `halation strength` refer to the percentage of scattered or
-halated light. `y filter shift` and `m filter shift` are the controls for the
-virtual yellow and magenta filters of the color enlarger. They are the number of
-steps shifted from a neutral position, that is, the starting settings that make
-an 18% gray target photographed with the correct reference illuminant fully
-neutral in the final print.
+These options exist in `PrintDRTSpec`. They are off by default because they remove part of the film character.
 
-There are controls to apply lens blur at several stages of the pipeline, for
-example in the camera lens, the color enlarger lens, or the scanner. There is
-also a control for blurring density to simulate diffusion during development,
-`grain > blur`. The scanner also has sharpness controls via a simple unsharp
-mask filter.
+- **`neutralize`:** The 2383 print has a crossover: the shadows at −2 stops are green (a\* −4.7) and the highlights at +2 to +4 stops are yellow (b\* +5 to +6.5). This option adds one 1D curve per channel on the print dye densities. A Newton solver makes each scene grey print neutral at the same L\*. The result is a crossover-free print stock.
+- **`hue_preserve`** (0 to 1): This option turns the film hue in Oklab toward the hue of ACES 2.0 alone. It keeps the film lightness and chroma. At 0.5, the mean hue error on a ColorChecker goes from 8.9° to 4.2°.
+- **`chroma_gain`:** This option multiplies the Oklab chroma.
 
-For example, upscaling a small crop of the film 12 times reveals the dye clouds.
+## Files that this fork adds or changes
 
-![Example of GUI interface with color test
-image.](img/readme/gui_grain_magnified.png)
+| File | Purpose |
+|---|---|
+| `src/spektrafilm_lut_creator/aces_lmt.py` | New. Both models, APD/ADX math, ACEScc codec, LUT sampling, `.cube` writer with license header. |
+| `scripts/aces_lmt/bake_print_drt.py` | New. Makes print-chain LMTs (section 2). |
+| `scripts/aces_lmt/bake.py` | New. Makes ADX film-scan LMTs (section 1). |
+| `scripts/aces_lmt/evaluate.py` | New. Renders camera raw files (rawpy) through the LMTs and ACES 2.0 (OCIO), with the LUT sampling of Alcedo Studio. |
+| `scripts/aces_lmt/verify.py`, `analyze_luts.py`, `analyze_print_chain.py`, `probe_*.py` | New. Tone-scale, colour and ΔE measurements. |
+| `scripts/aces_lmt/README.md` | New. Technical notes and measurements. |
+| `tests/lut_creator/test_aces_lmt.py` | New. Unit and integration tests. |
+| `.gitignore` | Changed. Ignores `/experiment_results/`. |
+| `README.md`, `README_UPSTREAM.md` | This README. The upstream README is kept unchanged as `README_UPSTREAM.md`. |
 
-This is one of the most appealing aspects for me, especially when I think of
-printing large, high-resolution simulated images while retaining all this
-low-level grain detail that is not present in the original picture.
+The fork does not change the spektrafilm runtime, the film profiles or the print profiles.
 
-## Preparing input images manually with darktable
+## Get the code and set it up
 
-Direct RAW import in the GUI is the simplest workflow, but manual development is
-still useful when you want tighter control over the input rendering.
+You need Git, Python 3.13 and [uv](https://docs.astral.sh/uv/). The commands are for Git Bash on Windows. On Linux and macOS, use `.venv/bin/python` instead of `.venv/Scripts/python.exe`.
 
-The simulation expects linear scene-referred files as input, with or without a
-transfer function. I usually open RAW files from digital cameras with
-[darktable](https://www.darktable.org/), deactivate the non-linear mappings done
-by `filmic` or `sigmoid`, and adjust the exposure to preserve all the
-information while avoiding clipping. Then I export the file as a 32-bit float
-TIFF in linear ProPhoto RGB.
+1. Clone the repository:
 
-## Example usage of the GUI
+   ```bash
+   git clone https://github.com/zidage/spektrafilm-lut.git
+   ```
 
-[Watch the GUI demo
-video](https://github.com/user-attachments/assets/534746b5-87ec-4bd0-96c9-5214ef7e381b)
+2. Go into the folder:
 
-## Things to consider
+   ```bash
+   cd spektrafilm-lut
+   ```
 
-- The simulation is quite slow for full-resolution images. On my laptop it takes
-  roughly 10 seconds to process 6 MP images. I usually adjust most values with
-  `PREVIEW`. When a final image is needed, use `SCAN`, which bypasses image
-  scaling.
-- Based on my experience building the profiles, Fujifilm data are less
-  self-consistent than Kodak data.
+3. Change to the branch with the changes:
 
-## Support
+   ```bash
+   git checkout aces-adx-lmt
+   ```
 
-spektrafilm is developed in my free time, often during late nights after my research work at KTH. If you'd like to support continued development and help fuel the next all-nighter coding session, consider [buying me a coffee](https://buymeacoffee.com/andreavolpato). Your contributions help me dedicate more time to the project and giving back to the [pixls.us](https://discuss.pixls.us/) community.
+4. Make a Python 3.13 virtual environment:
 
-## References
+   ```bash
+   uv venv --python 3.13 .venv
+   ```
 
-[^1]: Giorgianni, Madden, Digital Color Management, 2nd edition, 2008 Wiley
-[^2]: Hung, The Reproduction of Color, 6th edition, 2004 Wiley
-[^3]: Mallett, Yuksel, Spectral Primary Decomposition for Rendering with sRGB
-    Reflectance, Eurographics Symposium on Rendering - DL-only and Industry
-    Track, 2019, doi:10.2312/SR.20191216
+5. Install spektrafilm with the development tools. This also installs OpenColorIO:
 
-Sample images are from
-[signatureedits.com](https://www.signatureedits.com/)/free-raw-photos.
+   ```bash
+   uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
+   ```
 
+6. Run the tests. The first run downloads the SMPTE data, so you need an internet connection:
 
+   ```bash
+   .venv/Scripts/python.exe -m pytest tests/lut_creator/test_aces_lmt.py -q
+   ```
+
+To get upstream updates, add the original repository as a remote and fetch it:
+
+```bash
+git remote add upstream https://github.com/andreavolpato/spektrafilm.git
+```
+
+```bash
+git fetch upstream
+```
+
+## Make the LUTs
+
+The scripts write the LUTs to `experiment_results/`. Git ignores this folder. The repository does not contain `.cube` files. You make them on your computer.
+
+Make one print-chain LMT (recommended):
+
+```bash
+.venv/Scripts/python.exe scripts/aces_lmt/bake_print_drt.py kodak_vision3_250d --out experiment_results/luts_final
+```
+
+Select a different print or paper with `--print`:
+
+```bash
+.venv/Scripts/python.exe scripts/aces_lmt/bake_print_drt.py kodak_portra_400 --print fujifilm_crystal_archive_typeii --out experiment_results/luts_final
+```
+
+Make a reversal-film LMT. The script finds the film type automatically:
+
+```bash
+.venv/Scripts/python.exe scripts/aces_lmt/bake_print_drt.py fujifilm_velvia_100 --out experiment_results/luts_final
+```
+
+Make an ADX film-scan LMT (technical scan):
+
+```bash
+.venv/Scripts/python.exe scripts/aces_lmt/bake.py kodak_vision3_250d --out experiment_results/luts
+```
+
+Each run also writes `SPEKTRAFILM_LICENSE.txt` and `CHANGELOG.txt` into the output folder. Each `.cube` file has this header:
+
+```
+# Derived from spektrafilm by Andrea Volpato
+# https://github.com/andreavolpato/spektrafilm
+# Licensed CC BY-SA 4.0 (see SPEKTRAFILM_LICENSE.txt)
+# Modified by zidage: ACES LMT export (https://github.com/zidage/spektrafilm-lut, branch aces-adx-lmt)
+```
+
+Do not remove this header or these two files when you share LUTs. The spektrafilm LUT license requires them.
+
+The film and print names are the file names in `src/spektrafilm/data/profiles/`, without `.json`. One LUT takes approximately 3 seconds.
+
+## Use the LUTs in Alcedo Studio
+
+[Alcedo Studio](https://github.com/zidage/AlcedoStudio) applies a LUT in a Color Grade node, in ACEScc. Do these steps:
+
+1. Make the LUTs (see the section above).
+2. In Alcedo Studio, open the LUT panel of a Color Grade node.
+3. Click **Open LUT folder**.
+4. Copy the `.cube` files into this folder. Also copy `SPEKTRAFILM_LICENSE.txt` and `CHANGELOG.txt`.
+5. Click **Refresh LUT catalog**.
+6. Select the LUT in the Color Grade node.
+7. In **Display Transform**, select **ACES 2.0**. Keep the default display: Rec.709 primaries, **Gamma 2.2** encoding, peak luminance 100 nits.
+8. Adjust the **Exposure** control so that a mid-grey subject is near 0.18 scene-linear. Alcedo Studio sets the sensor clip to 1.0 and does not set mid grey automatically. The LUT expects a correctly exposed scene, as a film camera does.
+
+Rules for correct results:
+
+- Use print-chain LMTs (`*_invACES2_*`) **only with ACES 2.0 SDR, Rec.709, gamma 2.2, 100 nits**. With OpenDRT, HDR or another encoding, the inverse does not match and the image is incorrect.
+- ADX film-scan LMTs (`*_adx_*`) do not contain a DRT inverse. You can use them with each DRT. They give a technical scan without a print look.
+- Alcedo Studio uses ACEScc [0, 1] as the LUT input range. This is scene-linear 0.0012 to 223 (−7.2 to +10.3 stops from mid grey). It clamps values outside this range. The scripts sample the LUTs in this range.
+- Alcedo Studio uses trilinear sampling. `evaluate.py` uses the same sampling. Thus the test renders show the result of Alcedo Studio.
+- In a Color Grade node, the controls before the LUT (white balance, exposure, contrast, curves, saturation) change the "scene" before the film. Shadows and Highlights come after the LUT.
+
+## Test the LUTs on camera raw files
+
+This command renders raw files through ACES 2.0 with and without the LMTs. It saves contact sheets in `experiment_results/renders/`:
+
+```bash
+.venv/Scripts/python.exe scripts/aces_lmt/evaluate.py --auto-exposure --luts experiment_results/luts_final/*.cube --raws path/to/raw1.CR3 path/to/raw2.NEF
+```
+
+This command measures the tone scale, the system contrast and the ColorChecker colours of LUTs:
+
+```bash
+.venv/Scripts/python.exe scripts/aces_lmt/analyze_luts.py --luts experiment_results/luts_final/*.cube
+```
+
+## Known limits
+
+- **The print-chain LMTs are tied to one output transform** (ACES 2.0 SDR 100 nit, Rec.709, gamma 2.2). For another display, make new LUTs with a different `display` in `PrintDRTSpec`.
+- **The print sets the dynamic range.** Highlights go smoothly to white at the print shoulder, near +6 stops. This agrees with a real print. For the full negative range, use the ADX film-scan LMT.
+- **Some colour differences are model errors.** The profiles use generic dye spectra. This causes hue shifts, for example the blue sky turns approximately −10° to −15° toward cyan. Some of these shifts are real film character, and some are model errors. The options `neutralize` and `hue_preserve` can correct them.
+- **Still-photo negatives in the ADX model** have 0.5–1 stop crossovers, because the Academy IDT is made for motion-picture negatives. Use `--metric print --calibration gamma` for these films.
+
+## License of this fork
+
+- New and changed source code: GNU GPLv3, the same as spektrafilm.
+- LUTs that you make with this code: CC BY-SA 4.0 under [SPEKTRAFILM_LICENSE.txt](SPEKTRAFILM_LICENSE.txt). Keep the attribution header, the license file and `CHANGELOG.txt` with each copy. Do not sell the LUTs as a LUT pack. This is the wish of the original author.
+- SMPTE ST 2065-2 data: the code downloads it from pub.smpte.org and does not redistribute it.
+
+Original project: **spektrafilm by Andrea Volpato**, https://github.com/andreavolpato/spektrafilm.
